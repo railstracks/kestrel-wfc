@@ -238,6 +238,266 @@ public:
         fprintf(out, "}\n");
     }
 
+    // Write Lodestone scene JSON (schemaVersion 2) — directly loadable by the engine.
+    // Floor tiles → plane meshes, walls → box meshes + static physics bodies,
+    // pillars → smaller box meshes + physics, pits → lowered planes,
+    // doors → floor mesh + interactable (type=door), spawn → actor entity.
+    void write_lodestone_json(const RoomDefinition& room, FILE* out, uint64_t seed) const {
+        fprintf(out, "{\n");
+        fprintf(out, "  \"schemaVersion\": 2,\n");
+        fprintf(out, "  \"id\": \"wfc.room.%llu\",\n", (unsigned long long)seed);
+        fprintf(out, "  \"name\": \"WFC Generated Room (seed %llu)\",\n", (unsigned long long)seed);
+        fprintf(out, "  \"dimensionality\": \"3D\",\n");
+        fprintf(out, "  \"settings\": {\n");
+        fprintf(out, "    \"viewportCameraId\": 0,\n");
+        fprintf(out, "    \"primaryCameraEntityId\": 0,\n");
+        fprintf(out, "    \"ambientColor\": [0.15, 0.15, 0.2],\n");
+        fprintf(out, "    \"gravity\": [0.0, -9.8, 0.0]\n");
+        fprintf(out, "  },\n");
+
+        // Collect all entities
+        std::vector<std::string> entity_jsons;
+        int entity_id = 1;
+
+        // Floor tiles (merge into one mesh per row-strip for efficiency)
+        // For now: one entity per floor tile — engine can optimize later
+        for (size_t i = 0; i < room.floor_quads.size(); i++) {
+            const Quad& q = room.floor_quads[i];
+            float cx = (q.corner[0].x + q.corner[2].x) * 0.5f;
+            float cz = (q.corner[0].z + q.corner[2].z) * 0.5f;
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"floor_%d\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"plane\",\n"
+                "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
+                "          \"material\": {\n"
+                "            \"albedo\": [0.5, 0.45, 0.4],\n"
+                "            \"opacity\": 1.0\n"
+                "          }\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, (int)i,
+                cx, room.floor_y, cz,
+                tile_size_, tile_size_);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Wall boxes (mesh + static physics body)
+        for (size_t i = 0; i < room.wall_boxes.size(); i++) {
+            const Box& b = room.wall_boxes[i];
+            char buf[700];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"wall_%d\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"box\",\n"
+                "          \"dimensions\": [%.3f, %.3f, %.3f],\n"
+                "          \"material\": {\n"
+                "            \"albedo\": [0.3, 0.28, 0.25],\n"
+                "            \"opacity\": 1.0\n"
+                "          }\n"
+                "        },\n"
+                "        \"physicsBody\": {\n"
+                "          \"motionType\": \"static\",\n"
+                "          \"shapeType\": \"box\",\n"
+                "          \"mass\": 0.0,\n"
+                "          \"friction\": 0.8,\n"
+                "          \"restitution\": 0.0,\n"
+                "          \"halfExtents\": [%.3f, %.3f, %.3f]\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, (int)i,
+                b.center.x, b.center.y, b.center.z,
+                b.half_extents.x * 2, b.half_extents.y * 2, b.half_extents.z * 2,
+                b.half_extents.x, b.half_extents.y, b.half_extents.z);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Pillar boxes (mesh + static physics, narrower)
+        for (size_t i = 0; i < room.pillar_boxes.size(); i++) {
+            const Box& b = room.pillar_boxes[i];
+            char buf[700];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"pillar_%d\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"box\",\n"
+                "          \"dimensions\": [%.3f, %.3f, %.3f],\n"
+                "          \"material\": {\n"
+                "            \"albedo\": [0.4, 0.38, 0.35],\n"
+                "            \"opacity\": 1.0\n"
+                "          }\n"
+                "        },\n"
+                "        \"physicsBody\": {\n"
+                "          \"motionType\": \"static\",\n"
+                "          \"shapeType\": \"box\",\n"
+                "          \"mass\": 0.0,\n"
+                "          \"friction\": 0.6,\n"
+                "          \"restitution\": 0.1,\n"
+                "          \"halfExtents\": [%.3f, %.3f, %.3f]\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, (int)i,
+                b.center.x, b.center.y, b.center.z,
+                b.half_extents.x * 2, b.half_extents.y * 2, b.half_extents.z * 2,
+                b.half_extents.x, b.half_extents.y, b.half_extents.z);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Pit quads (lowered floor, dark material)
+        for (size_t i = 0; i < room.pit_quads.size(); i++) {
+            const Quad& q = room.pit_quads[i];
+            float cx = (q.corner[0].x + q.corner[2].x) * 0.5f;
+            float cz = (q.corner[0].z + q.corner[2].z) * 0.5f;
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"pit_%d\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"plane\",\n"
+                "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
+                "          \"material\": {\n"
+                "            \"albedo\": [0.1, 0.08, 0.06],\n"
+                "            \"opacity\": 1.0\n"
+                "          }\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, (int)i,
+                cx, q.corner[0].y, cz,
+                tile_size_, tile_size_);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Door zones (interactable doors)
+        for (size_t i = 0; i < room.doors.size(); i++) {
+            const DoorZone& d = room.doors[i];
+            char buf[600];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"door_%d\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"box\",\n"
+                "          \"dimensions\": [%.3f, %.3f, 0.1],\n"
+                "          \"material\": {\n"
+                "            \"albedo\": [0.35, 0.2, 0.1],\n"
+                "            \"opacity\": 1.0\n"
+                "          }\n"
+                "        },\n"
+                "        \"interactable\": {\n"
+                "          \"type\": \"door\",\n"
+                "          \"prompt\": \"Enter next room\",\n"
+                "          \"range\": 2.5\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, (int)i,
+                d.center.x, d.center.y, d.center.z,
+                d.width, d.height);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Directional light
+        {
+            char buf[512];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"sun_light\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [0, 10, 0], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"light\": {\n"
+                "          \"type\": \"directional\",\n"
+                "          \"color\": [1.0, 0.95, 0.85],\n"
+                "          \"intensity\": 0.8,\n"
+                "          \"direction\": [-0.3, -1.0, -0.2]\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Player spawn (if exists)
+        if (!room.spawns.empty()) {
+            const SpawnPoint& sp = room.spawns[0];
+            char buf[1024];
+            snprintf(buf, sizeof(buf),
+                "    {\n"
+                "      \"entityId\": %d,\n"
+                "      \"name\": \"%s\",\n"
+                "      \"parentEntityId\": 0,\n"
+                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                "      \"components\": {\n"
+                "        \"mesh\": {\n"
+                "          \"primitive\": \"capsule\",\n"
+                "          \"dimensions\": [0.4, 1.8, 0.4]\n"
+                "        },\n"
+                "        \"physicsBody\": {\n"
+                "          \"motionType\": \"kinematic\",\n"
+                "          \"shapeType\": \"capsule\",\n"
+                "          \"mass\": 70.0,\n"
+                "          \"friction\": 0.0,\n"
+                "          \"restitution\": 0.0,\n"
+                "          \"radius\": 0.4,\n"
+                "          \"height\": 1.8,\n"
+                "          \"fixedRotation\": true\n"
+                "        },\n"
+                "        \"actor\": {\n"
+                "          \"actorType\": \"player\",\n"
+                "          \"isPlayer\": true,\n"
+                "          \"controllerType\": \"fps\",\n"
+                "          \"eyeOffset\": [0, 0.8, 0]\n"
+                "        }\n"
+                "      }\n"
+                "    }",
+                entity_id, sp.label.c_str(),
+                sp.position.x, sp.position.y, sp.position.z);
+            entity_jsons.push_back(std::string(buf));
+            entity_id++;
+        }
+
+        // Emit entities array
+        fprintf(out, "  \"entities\": [\n");
+        for (size_t i = 0; i < entity_jsons.size(); i++) {
+            fprintf(out, "%s%s\n", entity_jsons[i].c_str(), i < entity_jsons.size() - 1 ? "," : "");
+        }
+        fprintf(out, "  ]\n");
+        fprintf(out, "}\n");
+    }
+
     // ASCII preview showing 3D side view (elevation map)
     std::string to_elevation_ascii(const RoomDefinition& room) const {
         std::string out;

@@ -68,9 +68,14 @@ int main(int argc, char* argv[]) {
     bool output_json = false;
 
     if (argc > 1) target_seed = atoi(argv[1]);
-    if (argc > 2) output_json = (std::string(argv[2]) == "--json");
+    bool lodestone_json = false;
+    if (argc > 2) {
+        std::string mode(argv[2]);
+        output_json = (mode == "--json");
+        lodestone_json = (mode == "--lodestone");
+    }
 
-    if (!output_json)
+    if (!output_json && !lodestone_json)
         printf("=== WFC Room Builder Test ===\n\n");
 
     // Generate multiple seeds, show stats
@@ -102,6 +107,8 @@ int main(int argc, char* argv[]) {
 
             if (output_json) {
                 builder.write_json(room, stdout);
+            } else if (lodestone_json) {
+                builder.write_lodestone_json(room, stdout, seed);
             } else {
                 printf("--- Target seed %d ---\n", seed);
                 printf("%s\n", gen.to_ascii(grid).c_str());
@@ -144,7 +151,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    if (!output_json) {
+    if (!output_json && !lodestone_json) {
         printf("\n=== Summary (20 seeds, %dx%d) ===\n", grid_w, grid_h);
         printf("Success rate: %d/20 (%.0f%%)\n", successes, successes / 20.0 * 100);
         printf("Avg tiles: floor=%d  wall=%d  door=%d  pillar=%d  pit=%d\n",
