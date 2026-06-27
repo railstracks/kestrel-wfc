@@ -259,72 +259,102 @@ public:
         std::vector<std::string> entity_jsons;
         int entity_id = 1;
 
-        // Floor tiles (merge into one mesh per row-strip for efficiency)
-        // For now: one entity per floor tile — engine can optimize later
-        for (size_t i = 0; i < room.floor_quads.size(); i++) {
-            const Quad& q = room.floor_quads[i];
-            float cx = (q.corner[0].x + q.corner[2].x) * 0.5f;
-            float cz = (q.corner[0].z + q.corner[2].z) * 0.5f;
-            char buf[512];
-            snprintf(buf, sizeof(buf),
-                "    {\n"
-                "      \"entityId\": %d,\n"
-                "      \"name\": \"floor_%d\",\n"
-                "      \"parentEntityId\": 0,\n"
-                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
-                "      \"components\": {\n"
-                "        \"mesh\": {\n"
-                "          \"primitive\": \"plane\",\n"
-                "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
-                "          \"material\": {\n"
-                "            \"albedo\": [0.5, 0.45, 0.4],\n"
-                "            \"opacity\": 1.0\n"
-                "          }\n"
-                "        }\n"
-                "      }\n"
-                "    }",
-                entity_id, (int)i,
-                cx, room.floor_y, cz,
-                tile_size_, tile_size_);
-            entity_jsons.push_back(std::string(buf));
-            entity_id++;
+        // Floor tiles — merge contiguous tiles along X axis into strips
+        // This reduces entity count dramatically (188 tiles → ~40-60 strips)
+        for (int y = 0; y < h_; y++) {
+            int x = 0;
+            while (x < w_) {
+                int tile = grid_[y * w_ + x];
+                // Floor, door, and pillar tiles all have floor underneath
+                bool has_floor = (tile == FLOOR || tile == DOOR || tile == PILLAR);
+                if (!has_floor) { x++; continue; }
+
+                // Find end of strip
+                int x_start = x;
+                while (x < w_) {
+                    int t = grid_[y * w_ + x];
+                    if (!(t == FLOOR || t == DOOR || t == PILLAR)) break;
+                    x++;
+                }
+                int strip_len = x - x_start;
+                float cx = (x_start + (x - 1)) * 0.5f * tile_size_;
+                float cz = y * tile_size_;
+                float strip_width = strip_len * tile_size_;
+
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                    "    {\n"
+                    "      \"entityId\": %d,\n"
+                    "      \"name\": \"floor_y%d_x%d\",\n"
+                    "      \"parentEntityId\": 0,\n"
+                    "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                    "      \"components\": {\n"
+                    "        \"mesh\": {\n"
+                    "          \"primitive\": \"plane\",\n"
+                    "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
+                    "          \"material\": {\n"
+                    "            \"albedo\": [0.5, 0.45, 0.4],\n"
+                    "            \"opacity\": 1.0\n"
+                    "          }\n"
+                    "        }\n"
+                    "      }\n"
+                    "    }",
+                    entity_id, y, x_start,
+                    cx, room.floor_y, cz,
+                    strip_width, tile_size_);
+                entity_jsons.push_back(std::string(buf));
+                entity_id++;
+            }
         }
 
-        // Wall boxes (mesh + static physics body)
-        for (size_t i = 0; i < room.wall_boxes.size(); i++) {
-            const Box& b = room.wall_boxes[i];
-            char buf[700];
-            snprintf(buf, sizeof(buf),
-                "    {\n"
-                "      \"entityId\": %d,\n"
-                "      \"name\": \"wall_%d\",\n"
-                "      \"parentEntityId\": 0,\n"
-                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
-                "      \"components\": {\n"
-                "        \"mesh\": {\n"
-                "          \"primitive\": \"box\",\n"
-                "          \"dimensions\": [%.3f, %.3f, %.3f],\n"
-                "          \"material\": {\n"
-                "            \"albedo\": [0.3, 0.28, 0.25],\n"
-                "            \"opacity\": 1.0\n"
-                "          }\n"
-                "        },\n"
-                "        \"physicsBody\": {\n"
-                "          \"motionType\": \"static\",\n"
-                "          \"shapeType\": \"box\",\n"
-                "          \"mass\": 0.0,\n"
-                "          \"friction\": 0.8,\n"
-                "          \"restitution\": 0.0,\n"
-                "          \"halfExtents\": [%.3f, %.3f, %.3f]\n"
-                "        }\n"
-                "      }\n"
-                "    }",
-                entity_id, (int)i,
-                b.center.x, b.center.y, b.center.z,
-                b.half_extents.x * 2, b.half_extents.y * 2, b.half_extents.z * 2,
-                b.half_extents.x, b.half_extents.y, b.half_extents.z);
-            entity_jsons.push_back(std::string(buf));
-            entity_id++;
+        // Wall boxes — merge contiguous walls along X axis into strips
+        for (int y = 0; y < h_; y++) {
+            int x = 0;
+            while (x < w_) {
+                if (grid_[y * w_ + x] != WALL) { x++; continue; }
+                int x_start = x;
+                while (x < w_ && grid_[y * w_ + x] == WALL) x++;
+                int strip_len = x - x_start;
+                float cx = (x_start + (x - 1)) * 0.5f * tile_size_;
+                float cz = y * tile_size_;
+                float strip_width = strip_len * tile_size_;
+                float half_w = strip_width * 0.5f;
+                float half_h = wall_height_ * 0.5f;
+                float half_d = tile_size_ * 0.5f;
+
+                char buf[700];
+                snprintf(buf, sizeof(buf),
+                    "    {\n"
+                    "      \"entityId\": %d,\n"
+                    "      \"name\": \"wall_y%d_x%d\",\n"
+                    "      \"parentEntityId\": 0,\n"
+                    "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                    "      \"components\": {\n"
+                    "        \"mesh\": {\n"
+                    "          \"primitive\": \"box\",\n"
+                    "          \"dimensions\": [%.3f, %.3f, %.3f],\n"
+                    "          \"material\": {\n"
+                    "            \"albedo\": [0.3, 0.28, 0.25],\n"
+                    "            \"opacity\": 1.0\n"
+                    "          }\n"
+                    "        },\n"
+                    "        \"physicsBody\": {\n"
+                    "          \"motionType\": \"static\",\n"
+                    "          \"shapeType\": \"box\",\n"
+                    "          \"mass\": 0.0,\n"
+                    "          \"friction\": 0.8,\n"
+                    "          \"restitution\": 0.0,\n"
+                    "          \"halfExtents\": [%.3f, %.3f, %.3f]\n"
+                    "        }\n"
+                    "      }\n"
+                    "    }",
+                    entity_id, y, x_start,
+                    cx, half_h, cz,
+                    strip_width, wall_height_, tile_size_,
+                    half_w, half_h, half_d);
+                entity_jsons.push_back(std::string(buf));
+                entity_id++;
+            }
         }
 
         // Pillar boxes (mesh + static physics, narrower)
@@ -364,34 +394,43 @@ public:
             entity_id++;
         }
 
-        // Pit quads (lowered floor, dark material)
-        for (size_t i = 0; i < room.pit_quads.size(); i++) {
-            const Quad& q = room.pit_quads[i];
-            float cx = (q.corner[0].x + q.corner[2].x) * 0.5f;
-            float cz = (q.corner[0].z + q.corner[2].z) * 0.5f;
-            char buf[512];
-            snprintf(buf, sizeof(buf),
-                "    {\n"
-                "      \"entityId\": %d,\n"
-                "      \"name\": \"pit_%d\",\n"
-                "      \"parentEntityId\": 0,\n"
-                "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
-                "      \"components\": {\n"
-                "        \"mesh\": {\n"
-                "          \"primitive\": \"plane\",\n"
-                "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
-                "          \"material\": {\n"
-                "            \"albedo\": [0.1, 0.08, 0.06],\n"
-                "            \"opacity\": 1.0\n"
-                "          }\n"
-                "        }\n"
-                "      }\n"
-                "    }",
-                entity_id, (int)i,
-                cx, q.corner[0].y, cz,
-                tile_size_, tile_size_);
-            entity_jsons.push_back(std::string(buf));
-            entity_id++;
+        // Pit quads — merge contiguous pits along X axis into strips
+        for (int y = 0; y < h_; y++) {
+            int x = 0;
+            while (x < w_) {
+                if (grid_[y * w_ + x] != PIT) { x++; continue; }
+                int x_start = x;
+                while (x < w_ && grid_[y * w_ + x] == PIT) x++;
+                int strip_len = x - x_start;
+                float cx = (x_start + (x - 1)) * 0.5f * tile_size_;
+                float cz = y * tile_size_;
+                float strip_width = strip_len * tile_size_;
+                float pit_y = room.floor_y - room.pit_depth;
+
+                char buf[512];
+                snprintf(buf, sizeof(buf),
+                    "    {\n"
+                    "      \"entityId\": %d,\n"
+                    "      \"name\": \"pit_y%d_x%d\",\n"
+                    "      \"parentEntityId\": 0,\n"
+                    "      \"transform\": { \"position\": [%.3f, %.3f, %.3f], \"orientation\": [0, 0, 0, 1], \"scale\": [1, 1, 1] },\n"
+                    "      \"components\": {\n"
+                    "        \"mesh\": {\n"
+                    "          \"primitive\": \"plane\",\n"
+                    "          \"dimensions\": [%.3f, 1.0, %.3f],\n"
+                    "          \"material\": {\n"
+                    "            \"albedo\": [0.1, 0.08, 0.06],\n"
+                    "            \"opacity\": 1.0\n"
+                    "          }\n"
+                    "        }\n"
+                    "      }\n"
+                    "    }",
+                    entity_id, y, x_start,
+                    cx, pit_y, cz,
+                    strip_width, tile_size_);
+                entity_jsons.push_back(std::string(buf));
+                entity_id++;
+            }
         }
 
         // Door zones (interactable doors)
